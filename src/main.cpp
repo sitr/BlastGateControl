@@ -49,13 +49,15 @@ int gates[NUMBER_OF_TOOLS][NUMBER_OF_GATES] = {
 };
 
 bool buttonPressed = false;
-volatile int buttonState = HIGH;
 bool initialisation_complete = false;
 const float FACTOR = 30;
 const float multiplier = 0.0625F;
 
-const int debounceTime = 50;  // Debounce in milliseconds
-unsigned long startMillis;
+const int debounceTime = 100;  // Debounce in milliseconds
+volatile int lastButtonState = LOW;
+volatile unsigned long lastDebounceTime = 0;
+volatile int buttonState;
+volatile int newButtonPressed;
 
 boolean checkForAmperageChange(int which);
 void turnOnDustCollection();
@@ -84,22 +86,17 @@ void setup() {
       Serial.println("Failed to initialize ADS 2.");
       while (1);
    }
-   pinMode(manualSwitchPin, INPUT_PULLUP);
+   pinMode(manualSwitchPin, INPUT);
    EIFR |= bit(INTF0); // Clear interrupt flag
    closeAllGates();
    initialisation_complete = true;
-   startMillis = millis();
-   attachInterrupt(digitalPinToInterrupt(manualSwitchPin), manualSwitchPressed, FALLING);
+   //attachInterrupt(digitalPinToInterrupt(manualSwitchPin), manualSwitchPressed, RISING);
+   attachInterrupt(digitalPinToInterrupt(manualSwitchPin), [] {if (newButtonPressed+= (millis() - lastDebounceTime) >= (debounceTime )) lastDebounceTime = millis();}, RISING);
    Serial.println("Initializing complete");
 }
 
 void loop() {
-   // openGate(3);
-   // delay(2000);
-   // closeGate(3);
-   // delay(2000);
-
-   if (buttonPressed == true) {
+   if (newButtonPressed > 0) {
       Serial.println("Button was pressed");
       if(manualToolOn == false) {
          manualToolOn = true;
@@ -109,7 +106,7 @@ void loop() {
          manualToolOn = false;
          activeTool = 50;
       }
-      buttonPressed = false;
+      newButtonPressed = 0;
    }
 
    for (int i = 0; i < NUMBER_OF_TOOLS; i++) {
@@ -157,13 +154,23 @@ void closeAllGates() {
 }
 
 void manualSwitchPressed() {
-   buttonState = digitalRead(manualSwitchPin);
-   if ((millis() - startMillis) > debounceTime) {
+   int reading = digitalRead(manualSwitchPin);
+   if (reading != lastButtonState) {
+      lastDebounceTime = millis();
+   }
+   Serial.println(lastDebounceTime);
+
+   if ((millis() - lastDebounceTime) > debounceTime) {
+      Serial.println(reading);
+      if (reading != buttonState) {
+         buttonState = reading;
+      }
       if (buttonState == HIGH) {
          buttonPressed = true;
-         startMillis = millis();
+         buttonState = !buttonState;
       }
    }
+   lastButtonState = buttonState;
 }
 
 boolean checkForAmperageChange(int which) {
