@@ -13,6 +13,10 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <Adafruit_ADS1X15.h>
+#include <arduino-timer.h>
+
+#define debug(x) Serial.print(x)
+#define debugln(x) Serial.println(x)
  
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(); // Uses the default I2C address 0x40
 Adafruit_ADS1115 ads1;
@@ -48,16 +52,15 @@ int gates[NUMBER_OF_TOOLS][NUMBER_OF_GATES] = {
   { 0, 0, 0, 0, 1 }
 };
 
-bool buttonPressed = false;
 bool initialisation_complete = false;
 const float FACTOR = 30;
 const float multiplier = 0.0625F;
 
-const int debounceTime = 100;  // Debounce in milliseconds
-volatile int lastButtonState = LOW;
-volatile unsigned long lastDebounceTime = 0;
-volatile int buttonState;
-volatile int newButtonPressed;
+const int debounceTime = 50;  // Debounce in milliseconds
+int lastButtonState = LOW;
+unsigned long lastDebounceTime = 0;
+int buttonState = LOW;
+auto toolCheckTimer = timer_create_default();
 
 boolean checkForAmperageChange(int which);
 void turnOnDustCollection();
@@ -66,8 +69,8 @@ void closeGate(uint8_t num);
 void openGate(uint8_t num);
 void closeAllGates();
 float getCorriente(int toolId);
-void manualSwitchPressed();
 void setGatePositions(int activeTool);
+bool checkAutomaticTools(void *);
 
 void setup() { 
    Serial.begin(9600);
@@ -77,44 +80,44 @@ void setup() {
   
    ads1.setGain(GAIN_TWO);
    if (!ads1.begin(0x48)) { // Sets the I2C address to 0x48: ADDR=GND
-      Serial.println("Failed to initialize ADS 1.");
+      debugln("Failed to initialize ADS 1.");
       while (1);
    }
 
    ads2.setGain(GAIN_TWO);
    if (!ads2.begin(0x49)) { // Sets the I2C address to 0x49: ADDR=VCC
-      Serial.println("Failed to initialize ADS 2.");
+      debugln("Failed to initialize ADS 2.");
       while (1);
    }
    pinMode(manualSwitchPin, INPUT);
-   EIFR |= bit(INTF0); // Clear interrupt flag
    closeAllGates();
+   toolCheckTimer.every(2000, checkAutomaticTools);
    initialisation_complete = true;
-   //attachInterrupt(digitalPinToInterrupt(manualSwitchPin), manualSwitchPressed, RISING);
-   attachInterrupt(digitalPinToInterrupt(manualSwitchPin), [] {if (newButtonPressed+= (millis() - lastDebounceTime) >= (debounceTime )) lastDebounceTime = millis();}, RISING);
-   Serial.println("Initializing complete");
+   debugln("Initializing complete");
 }
 
 void loop() {
-   if (newButtonPressed > 0) {
-      Serial.println("Button was pressed");
-      if(manualToolOn == false) {
-         manualToolOn = true;
-         activeTool = 4;
-      } 
-      else {
-         manualToolOn = false;
-         activeTool = 50;
-      }
-      newButtonPressed = 0;
+   toolCheckTimer.tick();
+   int reading = digitalRead(manualSwitchPin);
+   if (reading != lastButtonState) {
+      lastDebounceTime = millis();
    }
-
-   for (int i = 0; i < NUMBER_OF_TOOLS; i++) {
-      if(checkForAmperageChange(i) && manualToolOn == false) {
-         activeTool = i;
-         break;
+   if ((millis() - lastDebounceTime) > debounceTime) {
+      if (reading != buttonState) {
+         buttonState = reading;
+         if (buttonState == HIGH) {
+            if(manualToolOn == false) {
+               manualToolOn = true;
+               activeTool = 4;
+            } 
+            else {
+               manualToolOn = false;
+               activeTool = 50;
+            }
+         }
       }
    }
+   lastButtonState = reading;
 
    if (activeTool != 50) {
       setGatePositions(activeTool);
@@ -129,6 +132,20 @@ void loop() {
    }
 }
 
+bool checkAutomaticTools(void *) {
+   if (manualToolOn == false) {
+      for (int i = 0; i < NUMBER_OF_TOOLS; i++) {
+         if(checkForAmperageChange(i)) {
+            activeTool = i;
+            break;
+         }
+         else {
+            activeTool = 50;
+         }
+      }
+   }
+   return true;
+}
 void setGatePositions( int activeTool) {
    if (collectorIsOn == false) {
       // Manage all gate positions
@@ -153,26 +170,6 @@ void closeAllGates() {
    }
 }
 
-void manualSwitchPressed() {
-   int reading = digitalRead(manualSwitchPin);
-   if (reading != lastButtonState) {
-      lastDebounceTime = millis();
-   }
-   Serial.println(lastDebounceTime);
-
-   if ((millis() - lastDebounceTime) > debounceTime) {
-      Serial.println(reading);
-      if (reading != buttonState) {
-         buttonState = reading;
-      }
-      if (buttonState == HIGH) {
-         buttonPressed = true;
-         buttonState = !buttonState;
-      }
-   }
-   lastButtonState = buttonState;
-}
-
 boolean checkForAmperageChange(int which) {
    float currentRMS = getCorriente(which);
    if(currentRMS > ampThreshold) {
@@ -188,7 +185,7 @@ float getCorriente(int toolId) {
    long tiempo = millis();
    int counter = 0;
   
-   while (millis() - tiempo < 1000) {
+   while (millis() - tiempo < 100) {
       if(toolId == 0) {
          voltage = ads1.readADC_Differential_0_1() * multiplier;
       }
@@ -205,7 +202,7 @@ float getCorriente(int toolId) {
          return 0;
       }
       Corriente = voltage * FACTOR;
-      Corriente /= 1000.0;
+      Corriente /= 100.0;
       sum += sq(Corriente);
       counter = counter + 1;
    }
